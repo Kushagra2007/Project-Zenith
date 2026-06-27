@@ -6,14 +6,13 @@
     <title>Orbital Resonance 3D</title>
     <link rel="stylesheet" href="assets/css/style.css">
     <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
-    <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
     <script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/controls/OrbitControls.js"></script>
 </head>
 <body>
-    <div id="audio-lockout-overlay">
+    <div id="system-lockout-overlay">
         <div class="modal-box">
             <h1>ORBITAL RESONANCE 3D</h1>
-            <p>Initialize WebGL Engine and Web Audio API</p>
+            <p>Initialize WebGL Engine and Global Matrix</p>
             <button id="initialize-btn">ENGAGE SYSTEM</button>
         </div>
     </div>
@@ -35,16 +34,32 @@
             </div>
             <div class="inspector-body">
                 <div class="data-group"><label>NORAD ID</label><span id="inspector-id">--</span></div>
-                <div class="data-group"><label>LAT / LON / ALT</label><span id="inspector-coords">--</span></div>
-                <div class="data-group"><label>VELOCITY</label><span id="inspector-vel">--</span></div>
+                <div class="data-group"><label>LAT / LON</label><span id="inspector-coords">--</span></div>
+                <div class="data-group"><label>ALT / VEL</label><span id="inspector-alt-vel">--</span></div>
+                <hr style="border: 0; border-top: 1px solid #1e293b; margin: 10px 0;">
                 <div class="data-group"><label>INCLINATION</label><span id="inspector-inc">--</span></div>
                 <div class="data-group"><label>ECCENTRICITY</label><span id="inspector-ecc">--</span></div>
                 <div class="data-group"><label>MEAN MOTION</label><span id="inspector-mm">--</span></div>
+                <div class="data-group"><label>RA OF NODE</label><span id="inspector-ra">--</span></div>
+                <div class="data-group"><label>ARG OF PERIGEE</label><span id="inspector-arg">--</span></div>
+                <div class="data-group"><label>MEAN ANOMALY</label><span id="inspector-ma">--</span></div>
+                <div class="data-group"><label>APOGEE / PERIGEE</label><span id="inspector-ap">--</span></div>
+                <div class="data-group"><label>ORBITAL PERIOD</label><span id="inspector-period">--</span></div>
+                <div class="data-group"><label>BSTAR DRAG</label><span id="inspector-bstar">--</span></div>
             </div>
         </div>
-        <div id="active-voices-panel">
-            <h3>ACTIVE SONIFICATION VOICES (MAX 6)</h3>
-            <div id="voice-list">AWAITING OVERPASS...</div>
+           <div id="region-dashboard">
+            <div class="dashboard-section">
+                <h3>TARGET LOCATION</h3>
+                <div class="data-group">
+                    <label>LAT / LON</label>
+                    <span id="dash-coords">26.2200°, 81.2300°</span>
+                </div>
+            </div>
+            <div class="dashboard-section list-section">
+                <h3>ZENITH CONTACTS (<span id="dash-count">0</span>)</h3>
+                <div id="dash-sat-list">AWAITING TELEMETRY...</div>
+            </div>
         </div>
     </main>
 

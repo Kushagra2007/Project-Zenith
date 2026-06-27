@@ -1,0 +1,718 @@
+This file is a merged representation of the entire codebase, combined into a single document by Repomix.
+
+<file_summary>
+This section contains a summary of this file.
+
+<purpose>
+This file contains a packed representation of the entire repository's contents.
+It is designed to be easily consumable by AI systems for analysis, code review,
+or other automated processes.
+</purpose>
+
+<file_format>
+The content is organized as follows:
+1. This summary section
+2. Repository information
+3. Directory structure
+4. Repository files (if enabled)
+5. Multiple file entries, each consisting of:
+  - File path as an attribute
+  - Full contents of the file
+</file_format>
+
+<usage_guidelines>
+- This file should be treated as read-only. Any changes should be made to the
+  original repository files, not this packed version.
+- When processing this file, use the file path to distinguish
+  between different files in the repository.
+- Be aware that this file may contain sensitive information. Handle it with
+  the same level of security as you would the original repository.
+</usage_guidelines>
+
+<notes>
+- Some files may have been excluded based on .gitignore rules and Repomix's configuration
+- Binary files are not included in this packed representation. Please refer to the Repository Structure section for a complete list of file paths, including binary files
+- Files matching patterns in .gitignore are excluded
+- Files matching default ignore patterns are excluded
+- Files are sorted by Git change count (files with more changes are at the bottom)
+</notes>
+
+</file_summary>
+
+<directory_structure>
+backend/
+  config/
+    constants.js
+  services/
+    propagator.js
+  .gitignore
+  server.js
+frontend/
+  assets/
+    css/
+      style.css
+    js/
+      app.js
+    textures/
+      earth_diffuse.png
+  index.html
+</directory_structure>
+
+<files>
+This section contains the contents of the repository's files.
+
+<file path="backend/config/constants.js">
+// The exact trigger zone for the generative polyphonic chord
+export const INDIA_BOUNDS = {
+  latMin: 8.4,
+  latMax: 37.6,
+  lonMin: 68.7,
+  lonMax: 97.2,
+};
+
+// The expanded visual radar zone (approaching airspace)
+// We only transmit data to the frontend if the satellite is within this box
+export const RADAR_BOUNDS = {
+  latMin: -10.0,
+  latMax: 60.0,
+  lonMin: 40.0,
+  lonMax: 120.0,
+};
+
+// Public bulk TLE endpoints (Active Satellites, Starlink, etc.)
+export const TLE_SOURCES = [
+  "https://celestrak.org/NORAD/elements/gp.php?GROUP=visual&FORMAT=tle", // 100+ Brightest (ISS, Hubble, etc)
+  "https://celestrak.org/NORAD/elements/gp.php?GROUP=starlink&FORMAT=tle", // Active Starlink Constellation
+];
+</file>
+
+<file path="backend/services/propagator.js">
+import * as satellite from "satellite.js";
+import { INDIA_BOUNDS, RADAR_BOUNDS } from "../config/constants.js";
+
+export function calculateTelemetry(satelliteRegistry) {
+  const now = new Date();
+  const payload = [];
+
+  for (const id in satelliteRegistry) {
+    const sat = satelliteRegistry[id];
+    const satrec = sat.satrec;
+
+    // Skip records that fail to propagate (e.g., decayed orbits)
+    let positionAndVelocity;
+    try {
+      positionAndVelocity = satellite.propagate(satrec, now);
+    } catch (e) {
+      continue;
+    }
+
+    const positionEci = positionAndVelocity.position;
+    const velocityEci = positionAndVelocity.velocity;
+
+    // Ensure variables are valid numbers before proceeding
+    if (positionEci && velocityEci && !isNaN(positionEci.x)) {
+      const gmst = satellite.gstime(now);
+      const positionGd = satellite.eciToGeodetic(positionEci, gmst);
+
+      const latitude = satellite.degreesLat(positionGd.latitude);
+      const longitude = satellite.degreesLong(positionGd.longitude);
+      const altitude = positionGd.height;
+
+      // Coarse Filter: Is it inside our expanded RADAR viewing box?
+      const isWithinRadar =
+        latitude >= RADAR_BOUNDS.latMin &&
+        latitude <= RADAR_BOUNDS.latMax &&
+        longitude >= RADAR_BOUNDS.lonMin &&
+        longitude <= RADAR_BOUNDS.lonMax;
+
+      // If it is nowhere near India, discard it for this frame
+      if (!isWithinRadar) continue;
+
+      const velocity = Math.sqrt(
+        Math.pow(velocityEci.x, 2) +
+          Math.pow(velocityEci.y, 2) +
+          Math.pow(velocityEci.z, 2),
+      );
+
+      // Fine Filter: Is it actively inside the sonic trigger zone?
+      const isOverIndia =
+        latitude >= INDIA_BOUNDS.latMin &&
+        latitude <= INDIA_BOUNDS.latMax &&
+        longitude >= INDIA_BOUNDS.lonMin &&
+        longitude <= INDIA_BOUNDS.lonMax;
+
+      // Inside propagator.js, update the payload push:
+            payload.push({
+                id,
+                name: sat.name,
+                telemetry: {
+                    latitude: parseFloat(latitude.toFixed(4)),
+                    longitude: parseFloat(longitude.toFixed(4)),
+                    altitude: parseFloat(altitude.toFixed(2)),
+                    velocity: parseFloat(velocity.toFixed(3))
+                },
+                orbitalElements: {
+                    // Extracting raw Keplerian elements from the Celestrak satrec object
+                    inclination: (satrec.inclo * (180 / Math.PI)).toFixed(2), // Convert rad to deg
+                    eccentricity: satrec.ecco.toFixed(6),
+                    meanMotion: (satrec.no_kozai * (1440 / (2 * Math.PI))).toFixed(2), // Revs per day
+                    bstar: satrec.bstar.toExponential(4) // Drag term
+                },
+                isOverIndia,
+                timestamp: now.toISOString()
+            });
+    }
+  }
+  return payload;
+}
+</file>
+
+<file path="backend/.gitignore">
+node_modules/
+</file>
+
+<file path="backend/server.js">
+import express from "express";
+import { createServer } from "http";
+import { WebSocketServer } from "ws";
+import * as satellite from "satellite.js";
+
+// Notice we are ONLY importing the new dynamic sources here, no static arrays.
+import { TLE_SOURCES } from "./config/constants.js";
+import { calculateTelemetry } from "./services/propagator.js";
+
+const PORT = process.env.PORT || 3000;
+const app = express();
+const server = createServer(app);
+const wss = new WebSocketServer({ server });
+
+// This will now hold thousands of dynamically fetched satellites instead of just 10
+let satelliteRegistry = {};
+
+/**
+ * Bulk TLE Ingestion Engine
+ * Fetches and parses massive text files containing all active orbital elements
+ */
+async function updateTLEData() {
+  console.log("Initiating bulk TLE ingestion protocol...");
+  let successCount = 0;
+
+  for (const sourceUrl of TLE_SOURCES) {
+    try {
+      const response = await fetch(sourceUrl);
+      if (!response.ok)
+        throw new Error(`HTTP error! status: ${response.status}`);
+
+      const text = await response.text();
+      const lines = text.trim().split("\n");
+
+      // Bulk TLEs come in 3-line chunks (Name, Line 1, Line 2)
+      for (let i = 0; i < lines.length; i += 3) {
+        if (i + 2 < lines.length) {
+          const name = lines[i].trim();
+          const tleLine1 = lines[i + 1].trim();
+          const tleLine2 = lines[i + 2].trim();
+
+          // Extract NORAD ID from Line 1 (columns 3-7)
+          const noradId = tleLine1.substring(2, 7).trim();
+
+          try {
+            const satrec = satellite.twoline2satrec(tleLine1, tleLine2);
+            satelliteRegistry[noradId] = { name, satrec };
+            successCount++;
+          } catch (err) {
+            // Silently catch and discard corrupted math records
+          }
+        }
+      }
+    } catch (error) {
+      console.error(`Error fetching from source ${sourceUrl}:`, error.message);
+    }
+  }
+  console.log(
+    `Ingestion complete. Tracking ${successCount} active orbital bodies.`,
+  );
+}
+
+/**
+ * WebSocket Network Hub
+ */
+wss.on("connection", (ws) => {
+  console.log("Frontend dashboard connected.");
+  if (Object.keys(satelliteRegistry).length > 0) {
+    ws.send(
+      JSON.stringify({
+        type: "TELEMETRY_UPDATE",
+        data: calculateTelemetry(satelliteRegistry),
+      }),
+    );
+  }
+});
+
+// Broadcast culled telemetry at 1 Hz
+setInterval(() => {
+  if (wss.clients.size > 0 && Object.keys(satelliteRegistry).length > 0) {
+    const dataBuffer = JSON.stringify({
+      type: "TELEMETRY_UPDATE",
+      data: calculateTelemetry(satelliteRegistry),
+    });
+
+    wss.clients.forEach((client) => {
+      if (client.readyState === 1) client.send(dataBuffer);
+    });
+  }
+}, 1000);
+
+// Refresh TLEs every 24 hours to account for orbital decay
+setInterval(updateTLEData, 24 * 60 * 60 * 1000);
+
+// Bind to 0.0.0.0 for WSL2 Network Bridge
+server.listen(PORT, "0.0.0.0", async () => {
+  console.log(`Orbital Resonance Engine operating on port: ${PORT}`);
+  await updateTLEData();
+});
+</file>
+
+<file path="frontend/assets/css/style.css">
+:root { --bg-deep: #05070a; --surface: #0a0c10; --accent-cyan: #00f0ff; --accent-green: #39ff14; }
+body { margin: 0; background-color: var(--bg-deep); color: #fff; font-family: 'Courier New', monospace; overflow: hidden; }
+
+/* Keep your existing modal styles here... */
+#audio-lockout-overlay { position: fixed; top: 0; left: 0; width: 100vw; height: 100vh; background: rgba(5,7,10,0.95); z-index: 9999; display: flex; justify-content: center; align-items: center; }
+.modal-box { border: 1px solid var(--accent-cyan); padding: 40px; text-align: center; }
+button { background: transparent; border: 1px solid var(--accent-cyan); color: var(--accent-cyan); padding: 12px 24px; cursor: pointer; }
+
+.header-content { display: flex; justify-content: space-between; padding: 20px; border-bottom: 1px solid #1e293b; }
+.badge { padding: 8px 16px; font-weight: bold; }
+.connected { border: 1px solid var(--accent-green); color: var(--accent-green); }
+.disconnected { border: 1px solid #ff4a4a; color: #ff4a4a; }
+
+main { display: flex; height: calc(100vh - 80px); }
+#webgl-container { flex: 1; position: relative; }
+canvas { display: block; width: 100%; height: 100%; }
+
+#active-voices-panel { width: 350px; background: var(--surface); border-left: 1px solid #1e293b; padding: 20px; overflow-y: auto; }
+#active-voices-panel h3 { color: var(--accent-cyan); border-bottom: 1px solid #1e293b; padding-bottom: 10px; font-size: 1rem; }
+.voice-item { border-left: 3px solid var(--accent-green); padding: 10px; margin-bottom: 10px; background: rgba(57, 255, 20, 0.05); }
+.voice-name { font-weight: bold; color: var(--accent-green); margin-bottom: 5px; }
+.voice-data { font-size: 0.8rem; color: #94a3b8; }
+/* Satellite Inspector HUD */
+#target-inspector {
+    position: absolute;
+    top: 20px;
+    left: 20px;
+    width: 320px;
+    background: rgba(10, 12, 16, 0.9);
+    border: 1px solid var(--accent-cyan);
+    backdrop-filter: blur(5px);
+    z-index: 100;
+    transition: opacity 0.3s ease;
+}
+
+#target-inspector.hidden { opacity: 0; pointer-events: none; }
+
+.inspector-header {
+    display: flex;
+    justify-content: space-between;
+    background: rgba(0, 240, 255, 0.1);
+    padding: 10px 15px;
+    border-bottom: 1px solid var(--accent-cyan);
+}
+
+.inspector-header h2 { margin: 0; font-size: 1rem; color: var(--accent-cyan); }
+#close-inspector { padding: 0; border: none; font-size: 1.2rem; background: transparent; }
+
+.inspector-body { padding: 15px; }
+.data-group { display: flex; justify-content: space-between; margin-bottom: 8px; border-bottom: 1px dashed #1e293b; padding-bottom: 4px; }
+.data-group label { color: #64748b; font-size: 0.75rem; }
+.data-group span { color: #fff; font-size: 0.85rem; font-weight: bold; text-align: right; }
+
+/* Sidebar Updates */
+.voice-item.overpass-silent { border-left-color: #64748b; background: rgba(100, 116, 139, 0.05); }
+.voice-item.overpass-silent .voice-name { color: #94a3b8; }
+</file>
+
+<file path="frontend/assets/js/app.js">
+// --- AUDIO ENGINE ---
+let audioCtx = null;
+const satelliteAudioEngines = {};
+const MAX_POLYPHONY = 6;
+const TARGET_COORD = { lat: 26.22, lon: 81.23 }; // Raebareli
+const EARTH_RADIUS = 6371;
+
+const SCALE_FREQUENCIES = [
+  65.41, 73.42, 78.39, 87.31, 98.0, 130.81, 146.83, 156.79, 174.61, 196.0,
+  261.63, 293.66, 313.58, 349.23, 392.0, 523.25, 587.33, 627.17, 698.46, 783.99,
+];
+
+function createSatelliteAudioEngine() {
+  if (!audioCtx) return null;
+  const osc = audioCtx.createOscillator();
+  const filter = audioCtx.createBiquadFilter();
+  const gainNode = audioCtx.createGain();
+  osc.type = "sine";
+  filter.type = "lowpass";
+  filter.Q.value = 5;
+  gainNode.gain.setValueAtTime(0, audioCtx.currentTime);
+  osc.connect(filter);
+  filter.connect(gainNode);
+  gainNode.connect(audioCtx.destination);
+  osc.start();
+  return { osc, filter, gainNode };
+}
+
+function updateAudioEngine(satId, altitude, velocity, isActive) {
+  let engine = satelliteAudioEngines[satId];
+  if (!engine) {
+    if (!isActive) return;
+    engine = createSatelliteAudioEngine();
+    if (!engine) return;
+    satelliteAudioEngines[satId] = engine;
+  }
+
+  if (!isActive) {
+    engine.gainNode.gain.setTargetAtTime(0, audioCtx.currentTime, 0.5);
+    setTimeout(() => {
+      if (satelliteAudioEngines[satId]) {
+        engine.osc.stop();
+        engine.osc.disconnect();
+        delete satelliteAudioEngines[satId];
+      }
+    }, 1000);
+    return;
+  }
+
+  const normAlt = Math.max(0, Math.min(1, (altitude - 300) / 300));
+  const targetFreq =
+    SCALE_FREQUENCIES[Math.floor(normAlt * (SCALE_FREQUENCIES.length - 1))];
+  engine.osc.frequency.setTargetAtTime(targetFreq, audioCtx.currentTime, 0.1);
+
+  const filterCutoff =
+    200 + Math.max(0, Math.min(1, (velocity - 7.4) / 0.4)) * 1200;
+  engine.filter.frequency.setTargetAtTime(
+    filterCutoff,
+    audioCtx.currentTime,
+    0.1,
+  );
+  engine.gainNode.gain.setTargetAtTime(0.1, audioCtx.currentTime, 0.15);
+}
+
+// --- 3D SCENE SETUP (THREE.JS) ---
+const container = document.getElementById("webgl-container");
+const scene = new THREE.Scene();
+const camera = new THREE.PerspectiveCamera(
+  45,
+  container.clientWidth / container.clientHeight,
+  1,
+  50000,
+);
+const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
+renderer.setSize(container.clientWidth, container.clientHeight);
+
+// FIXED: Properly scale the canvas for high-DPI displays without crashing
+renderer.setPixelRatio(window.devicePixelRatio);
+container.appendChild(renderer.domElement);
+
+camera.position.set(0, 10000, 18000);
+
+const ambientLight = new THREE.AmbientLight(0xffffff, 0.8);
+scene.add(ambientLight);
+
+const sunLight = new THREE.DirectionalLight(0xffffff, 1.2);
+sunLight.position.set(20000, 15000, 25000);
+scene.add(sunLight);
+
+const earthGeometry = new THREE.SphereGeometry(EARTH_RADIUS, 64, 64);
+const earthMaterial = new THREE.MeshPhongMaterial({
+  color: 0x0a192f,
+  specular: new THREE.Color(0x333333),
+  shininess: 15,
+});
+const earthMesh = new THREE.Mesh(earthGeometry, earthMaterial);
+scene.add(earthMesh);
+
+const textureLoader = new THREE.TextureLoader();
+textureLoader.load(
+  "assets/textures/earth_diffuse.png",
+  function (texture) {
+    earthMaterial.map = texture;
+    earthMaterial.color.setHex(0xffffff);
+    earthMaterial.needsUpdate = true;
+  },
+  undefined,
+  function (err) {
+    console.warn("Texture lookup failed. Using blue fallback.");
+  },
+);
+
+const targetGeometry = new THREE.CylinderGeometry(150, 900, 4000, 16, 1, true);
+const targetMaterial = new THREE.MeshBasicMaterial({
+  color: 0x00f0ff,
+  transparent: true,
+  opacity: 0.25,
+  wireframe: true,
+});
+const targetMesh = new THREE.Mesh(targetGeometry, targetMaterial);
+
+function getCartesian(lat, lon, alt) {
+  const phi = (90 - lat) * (Math.PI / 180);
+  const theta = (lon + 180) * (Math.PI / 180);
+  const radius = EARTH_RADIUS + alt;
+  return {
+    x: -(radius * Math.sin(phi) * Math.cos(theta)),
+    y: radius * Math.cos(phi),
+    z: radius * Math.sin(phi) * Math.sin(theta),
+  };
+}
+
+const pos = getCartesian(TARGET_COORD.lat, TARGET_COORD.lon, 2000);
+targetMesh.position.set(pos.x, pos.y, pos.z);
+targetMesh.lookAt(0, 0, 0);
+targetMesh.rotateX(Math.PI / 2);
+scene.add(targetMesh);
+
+const geometry = new THREE.BufferGeometry();
+const material = new THREE.PointsMaterial({
+  color: 0x39ff14,
+  size: 65,
+  transparent: true,
+  opacity: 0.75,
+  blending: THREE.AdditiveBlending,
+  depthWrite: false,
+});
+const particles = new THREE.Points(geometry, material);
+scene.add(particles);
+
+const controls = new THREE.OrbitControls(camera, renderer.domElement);
+controls.enableDamping = true;
+controls.dampingFactor = 0.05;
+controls.minDistance = 7500;
+controls.maxDistance = 35000;
+
+// --- RAYCASTER TARGET SELECTION MECHANICS ---
+const raycaster = new THREE.Raycaster();
+raycaster.params.Points.threshold = 40;
+const mouse = new THREE.Vector2();
+window.latestTelemetry = [];
+
+window.addEventListener("click", (event) => {
+  // FIXED: Prevent the Raycaster from crashing the entire app if the websocket hasn't delivered data yet
+  if (!geometry.attributes.position) return;
+
+  // Ignore clicks on UI elements
+  if (
+    event.target.closest("#active-voices-panel") ||
+    event.target.closest("#target-inspector") ||
+    event.target.closest("#audio-lockout-overlay")
+  )
+    return;
+
+  const rect = renderer.domElement.getBoundingClientRect();
+  mouse.x = ((event.clientX - rect.left) / rect.width) * 2 - 1;
+  mouse.y = -((event.clientY - rect.top) / rect.height) * 2 + 1;
+
+  raycaster.setFromCamera(mouse, camera);
+  const intersects = raycaster.intersectObject(particles);
+
+  if (intersects.length > 0) {
+    const satData = window.latestTelemetry[intersects[0].index];
+    if (satData) displayTargetInspector(satData);
+  }
+});
+
+document.getElementById("close-inspector")?.addEventListener("click", () => {
+  document.getElementById("target-inspector")?.classList.add("hidden");
+});
+
+function displayTargetInspector(sat) {
+  const inspector = document.getElementById("target-inspector");
+  if (!inspector) return; // Prevent crashes if the HTML is missing
+
+  document.getElementById("inspector-name").textContent = sat.name;
+  document.getElementById("inspector-id").textContent = sat.id;
+  document.getElementById("inspector-coords").textContent =
+    `${sat.telemetry.latitude}°, ${sat.telemetry.longitude}° | ${sat.telemetry.altitude}km`;
+  document.getElementById("inspector-vel").textContent =
+    `${sat.telemetry.velocity} km/s`;
+
+  if (sat.orbitalElements) {
+    document.getElementById("inspector-inc").textContent =
+      `${sat.orbitalElements.inclination}°`;
+    document.getElementById("inspector-ecc").textContent =
+      sat.orbitalElements.eccentricity;
+    document.getElementById("inspector-mm").textContent =
+      `${sat.orbitalElements.meanMotion} rev/d`;
+  } else {
+    document.getElementById("inspector-inc").textContent = "PENDING...";
+    document.getElementById("inspector-ecc").textContent = "PENDING...";
+    document.getElementById("inspector-mm").textContent = "PENDING...";
+  }
+  inspector.classList.remove("hidden");
+}
+
+// --- PIPELINE STREAM REFRESH ---
+function update3DScene(satellites) {
+  window.latestTelemetry = satellites;
+
+  const positions = new Float32Array(satellites.length * 3);
+  satellites.forEach((sat, i) => {
+    const coords = getCartesian(
+      sat.telemetry.latitude,
+      sat.telemetry.longitude,
+      sat.telemetry.altitude,
+    );
+    positions[i * 3] = coords.x;
+    positions[i * 3 + 1] = coords.y;
+    positions[i * 3 + 2] = coords.z;
+  });
+
+  geometry.setAttribute("position", new THREE.BufferAttribute(positions, 3));
+  geometry.computeBoundingBox();
+  geometry.computeBoundingSphere();
+  geometry.attributes.position.needsUpdate = true;
+
+  let overpassingSats = satellites
+    .filter((s) => s.isOverIndia)
+    .map((s) => {
+      const dx = s.telemetry.longitude - TARGET_COORD.lon;
+      const dy = s.telemetry.latitude - TARGET_COORD.lat;
+      return { ...s, dist: Math.sqrt(dx * dx + dy * dy) };
+    });
+
+  overpassingSats.sort((a, b) => a.dist - b.dist);
+  const activeVoices = overpassingSats.slice(0, MAX_POLYPHONY);
+  const sonifiedSatIds = new Set(activeVoices.map((s) => s.id));
+
+  Object.keys(satelliteAudioEngines).forEach((id) => {
+    if (!sonifiedSatIds.has(id)) updateAudioEngine(id, 0, 0, false);
+  });
+
+  const voiceList = document.getElementById("voice-list");
+  if (!voiceList) return;
+
+  if (overpassingSats.length === 0) {
+    voiceList.innerHTML =
+      '<div class="waiting-notice">AWAITING TARGET OVERPASS...</div>';
+  } else {
+    let html = "";
+    overpassingSats.forEach((sat) => {
+      const isSonified = sonifiedSatIds.has(sat.id);
+      if (isSonified) {
+        updateAudioEngine(
+          sat.id,
+          sat.telemetry.altitude,
+          sat.telemetry.velocity,
+          true,
+        );
+      }
+      html += `
+                <div class="voice-item ${isSonified ? "" : "overpass-silent"}">
+                    <div class="voice-name">${sat.name}</div>
+                    <div class="voice-data">ALT: ${sat.telemetry.altitude}km | CHORD: ${isSonified ? "ACTIVE SYNTH" : "SILENT MATRIX"}</div>
+                </div>
+            `;
+    });
+    voiceList.innerHTML = html;
+  }
+}
+
+function animate() {
+  requestAnimationFrame(animate);
+  controls.update();
+  renderer.render(scene, camera);
+}
+// FIXED: Explicitly trigger the render loop so it doesn't freeze
+animate();
+
+// --- CONNECTION INTERFACE ---
+const initBtn = document.getElementById("initialize-btn");
+if (initBtn) {
+  initBtn.addEventListener("click", (event) => {
+    // FIXED: Stop the button click from bubbling to the global window and crashing the Raycaster
+    event.stopPropagation();
+
+    audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+    const overlay = document.getElementById("audio-lockout-overlay");
+    if (overlay) overlay.style.display = "none";
+
+    // FIXED: Restored the full WebSocket connection protocol
+    const socket = new WebSocket("ws://localhost:3000");
+
+    socket.onopen = () => {
+      const badge = document.getElementById("status-badge");
+      if (badge) {
+        badge.textContent = "LINK ESTABLISHED";
+        badge.className = "badge connected";
+      }
+    };
+    socket.onmessage = (event) => {
+      const message = JSON.parse(event.data);
+      if (message.type === "TELEMETRY_UPDATE") update3DScene(message.data);
+    };
+  });
+}
+
+window.addEventListener("resize", () => {
+  camera.aspect = container.clientWidth / container.clientHeight;
+  camera.updateProjectionMatrix();
+  renderer.setSize(container.clientWidth, container.clientHeight);
+});
+</file>
+
+<file path="frontend/index.html">
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Orbital Resonance 3D</title>
+    <link rel="stylesheet" href="assets/css/style.css">
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/controls/OrbitControls.js"></script>
+</head>
+<body>
+    <div id="audio-lockout-overlay">
+        <div class="modal-box">
+            <h1>ORBITAL RESONANCE 3D</h1>
+            <p>Initialize WebGL Engine and Web Audio API</p>
+            <button id="initialize-btn">ENGAGE SYSTEM</button>
+        </div>
+    </div>
+
+    <header>
+        <div class="header-content">
+            <h1>ORBITAL RESONANCE: TACTICAL 3D VIEW</h1>
+            <div id="status-badge" class="badge disconnected">LINK OFFLINE</div>
+        </div>
+    </header>
+
+    <main>
+        <div id="webgl-container"></div>
+        
+        <div id="target-inspector" class="hidden">
+            <div class="inspector-header">
+                <h2 id="inspector-name">TARGET ACQUIRED</h2>
+                <button id="close-inspector">✕</button>
+            </div>
+            <div class="inspector-body">
+                <div class="data-group"><label>NORAD ID</label><span id="inspector-id">--</span></div>
+                <div class="data-group"><label>LAT / LON / ALT</label><span id="inspector-coords">--</span></div>
+                <div class="data-group"><label>VELOCITY</label><span id="inspector-vel">--</span></div>
+                <div class="data-group"><label>INCLINATION</label><span id="inspector-inc">--</span></div>
+                <div class="data-group"><label>ECCENTRICITY</label><span id="inspector-ecc">--</span></div>
+                <div class="data-group"><label>MEAN MOTION</label><span id="inspector-mm">--</span></div>
+            </div>
+        </div>
+        <div id="active-voices-panel">
+            <h3>ACTIVE SONIFICATION VOICES (MAX 6)</h3>
+            <div id="voice-list">AWAITING OVERPASS...</div>
+        </div>
+    </main>
+
+    <script src="assets/js/app.js"></script>
+</body>
+</html>
+</file>
+
+</files>
