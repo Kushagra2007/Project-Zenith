@@ -1,0 +1,53 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Orbital Resonance 3D</title>
+    <link rel="stylesheet" href="assets/css/style.css">
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/controls/OrbitControls.js"></script>
+</head>
+<body>
+    <div id="audio-lockout-overlay">
+        <div class="modal-box">
+            <h1>ORBITAL RESONANCE 3D</h1>
+            <p>Initialize WebGL Engine and Web Audio API</p>
+            <button id="initialize-btn">ENGAGE SYSTEM</button>
+        </div>
+    </div>
+
+    <header>
+        <div class="header-content">
+            <h1>ORBITAL RESONANCE: TACTICAL 3D VIEW</h1>
+            <div id="status-badge" class="badge disconnected">LINK OFFLINE</div>
+        </div>
+    </header>
+
+    <main>
+        <div id="webgl-container"></div>
+        
+        <div id="target-inspector" class="hidden">
+            <div class="inspector-header">
+                <h2 id="inspector-name">TARGET ACQUIRED</h2>
+                <button id="close-inspector">✕</button>
+            </div>
+            <div class="inspector-body">
+                <div class="data-group"><label>NORAD ID</label><span id="inspector-id">--</span></div>
+                <div class="data-group"><label>LAT / LON / ALT</label><span id="inspector-coords">--</span></div>
+                <div class="data-group"><label>VELOCITY</label><span id="inspector-vel">--</span></div>
+                <div class="data-group"><label>INCLINATION</label><span id="inspector-inc">--</span></div>
+                <div class="data-group"><label>ECCENTRICITY</label><span id="inspector-ecc">--</span></div>
+                <div class="data-group"><label>MEAN MOTION</label><span id="inspector-mm">--</span></div>
+            </div>
+        </div>
+        <div id="active-voices-panel">
+            <h3>ACTIVE SONIFICATION VOICES (MAX 6)</h3>
+            <div id="voice-list">AWAITING OVERPASS...</div>
+        </div>
+    </main>
+
+    <script src="assets/js/app.js"></script>
+</body>
+</html>
