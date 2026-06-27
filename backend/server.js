@@ -34,12 +34,19 @@ async function updateTLEData() {
 
   for (const sourceUrl of TLE_SOURCES) {
     try {
-      const response = await fetch(sourceUrl);
+      // INJECTED: Browser-spoofing headers to bypass Celestrak's cloud firewall
+      const response = await fetch(sourceUrl, {
+        headers: {
+          "User-Agent":
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36 ProjectZenith/1.0",
+          Accept:
+            "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+          "Accept-Language": "en-US,en;q=0.5",
+        },
+      });
+
       if (!response.ok)
         throw new Error(`HTTP error! status: ${response.status}`);
-
-      const text = await response.text();
-      const lines = text.trim().split("\n");
 
       // Bulk TLEs come in 3-line chunks (Name, Line 1, Line 2)
       for (let i = 0; i < lines.length; i += 3) {
