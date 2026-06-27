@@ -300,7 +300,9 @@ if (initBtn) {
     const overlay = document.getElementById("system-lockout-overlay");
     if (overlay) overlay.style.display = "none";
 
-    const socket = new WebSocket("ws://localhost:3000");
+    // Automatically detect if we are on local HTTP or cloud HTTPS
+    const protocol = window.location.protocol === "https:" ? "wss:" : "ws:";
+    const socket = new WebSocket(`${protocol}//${window.location.host}`);
 
     socket.onopen = () => {
       const badge = document.getElementById("status-badge");

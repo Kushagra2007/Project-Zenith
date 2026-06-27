@@ -1,0 +1,13 @@
+{
+  "name": "project-zenith",
+  "version": "1.0.0",
+  "type": "module",
+  "scripts": {
+    "start": "node backend/server.js"
+  },
+  "dependencies": {
+    "express": "^5.2.1",
+    "satellite.js": "^7.0.1",
+    "ws": "^8.21.0"
+  }
+}

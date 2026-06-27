@@ -1,14 +1,23 @@
 import express from "express";
 import { createServer } from "http";
 import { WebSocketServer } from "ws";
+import path from "path";
+import { fileURLToPath } from "url";
 import * as satellite from "satellite.js";
 
-// Notice we are ONLY importing the new dynamic sources here, no static arrays.
 import { TLE_SOURCES } from "./config/constants.js";
 import { calculateTelemetry } from "./services/propagator.js";
 
+// Set up directory paths for ES Modules
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
+
 const PORT = process.env.PORT || 3000;
 const app = express();
+
+// Tell Express to serve your frontend files to the web
+app.use(express.static(path.join(__dirname, "../frontend")));
+
 const server = createServer(app);
 const wss = new WebSocketServer({ server });
 
